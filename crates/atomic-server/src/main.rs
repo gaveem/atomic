@@ -5,7 +5,12 @@
 
 mod config;
 
-use actix_web::{middleware, web, App, HttpServer};
+use actix_files::{Files, NamedFile};
+use actix_web::{
+    dev::{fn_service, ServiceRequest, ServiceResponse},
+    http::{header, Method},
+    middleware, web, App, HttpResponse, HttpServer,
+};
 use atomic_server::{
     app::configure_app,
     cors::build_cors,
@@ -18,8 +23,7 @@ use atomic_server::{
 };
 use clap::Parser;
 use config::{Cli, Command, MigrateAction, TokenAction};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{path::Path, sync::Arc, time::Duration};
 
 const SETUP_CLAIMED_AT_KEY: &str = "setup.claimed_at";
 
@@ -74,6 +78,7 @@ async fn main() -> std::io::Result<()> {
             database_url,
             setup_token,
             dangerously_skip_setup_token,
+            web_dir,
         }) => {
             // Auto-detect public URL on Fly.io if not explicitly set
             let public_url = public_url.or_else(|| {
@@ -90,6 +95,7 @@ async fn main() -> std::io::Result<()> {
                 public_url,
                 setup_token,
                 dangerously_skip_setup_token,
+                web_dir,
                 log_buffer,
             )
             .await
@@ -104,6 +110,7 @@ async fn main() -> std::io::Result<()> {
                 None,
                 None,
                 false,
+                None,
                 log_buffer,
             )
             .await
@@ -480,8 +487,14 @@ async fn run_server(
     public_url: Option<String>,
     setup_token: Option<String>,
     dangerously_skip_setup_token: bool,
+    web_dir: Option<std::path::PathBuf>,
     log_buffer: LogBuffer,
 ) -> std::io::Result<()> {
+    let web_dir = web_dir.map(|path| validate_web_dir(&path)).transpose()?;
+    if let Some(path) = &web_dir {
+        tracing::info!(path = %path.display(), "serving web frontend");
+    }
+
     let manager = Arc::new(manager);
 
     // Get active core for startup tasks
@@ -950,6 +963,7 @@ async fn run_server(
 
     HttpServer::new(move || {
         let cors = build_cors(cors_public_url.as_deref());
+        let web_dir = web_dir.clone();
 
         // CORS + compression are deployment concerns and stay here; the
         // route table itself lives in `atomic_server::app::configure_app`
@@ -957,7 +971,12 @@ async fn run_server(
         App::new()
             .wrap(cors)
             .wrap(middleware::Compress::default())
-            .configure(configure_app(app_state.clone(), mcp_transport.clone()))
+            .configure(|cfg| {
+                cfg.configure(configure_app(app_state.clone(), mcp_transport.clone()));
+                if let Some(web_dir) = &web_dir {
+                    cfg.service(web_files(web_dir));
+                }
+            })
     })
     .workers(4)
     .bind((bind_owned.as_str(), port))?
@@ -969,6 +988,72 @@ async fn run_server(
     shutdown_manager.optimize_all();
 
     Ok(())
+}
+
+fn validate_web_dir(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    let web_dir = path.canonicalize().map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!("web frontend directory {}: {error}", path.display()),
+        )
+    })?;
+    if !web_dir.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("web frontend path {} is not a directory", web_dir.display()),
+        ));
+    }
+    if !web_dir.join("index.html").is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "web frontend directory {} does not contain index.html",
+                web_dir.display()
+            ),
+        ));
+    }
+    Ok(web_dir)
+}
+
+fn web_files(web_dir: &Path) -> Files {
+    let index_file = web_dir.join("index.html");
+    Files::new("/", web_dir)
+        .index_file("index.html")
+        .default_handler(fn_service(move |req: ServiceRequest| {
+            let index_file = index_file.clone();
+            async move {
+                let accepts_html = req
+                    .headers()
+                    .get(header::ACCEPT)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.contains("text/html"));
+                let is_server_route = is_server_route(req.path());
+                let serve_index = req.method() == Method::GET && accepts_html && !is_server_route;
+                let (request, _) = req.into_parts();
+                let response = if serve_index {
+                    NamedFile::open_async(index_file)
+                        .await?
+                        .into_response(&request)
+                } else {
+                    HttpResponse::NotFound().finish()
+                };
+                Ok(ServiceResponse::new(request, response))
+            }
+        }))
+}
+
+fn is_server_route(path: &str) -> bool {
+    [
+        "/api",
+        "/health",
+        "/ready",
+        "/ws",
+        "/mcp",
+        "/oauth",
+        "/.well-known",
+    ]
+    .iter()
+    .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")))
 }
 
 async fn backfill_setup_claimed_at(

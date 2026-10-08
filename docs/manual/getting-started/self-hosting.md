@@ -55,10 +55,13 @@ The server image stores data under `/data`. Set `PUBLIC_URL` when using remote M
 ```bash
 git clone https://github.com/kenforthewin/atomic.git
 cd atomic
-cargo run -p atomic-server -- --data-dir ./data serve --bind 0.0.0.0 --port 8080
+npm run build:web
+cargo run -p atomic-server -- --data-dir ./data serve --bind 0.0.0.0 --port 8080 --web-dir ./dist-web
 ```
 
-Open `http://localhost:8080/health` to verify the server is running. The API docs are available at `/api/docs` and `/api/docs/openapi.json`.
+Open `http://localhost:8080` for the UI or
+`http://localhost:8080/health` to verify the server is running. The API docs
+are available at `/api/docs` and `/api/docs/openapi.json`.
 Set `ATOMIC_SETUP_TOKEN` and enter that value in the setup wizard for the first claim, or create the first API token with the CLI.
 
 ## Authentication

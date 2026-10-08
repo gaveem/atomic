@@ -92,6 +92,14 @@ ATOMIC_SETUP_TOKEN="$(openssl rand -base64 24)" \
 cargo run -p atomic-server -- --data-dir ./data serve --port 8080
 ```
 
+To serve the browser UI from the standalone server, build the web target and
+pass its output directory:
+
+```bash
+npm run build:web
+cargo run -p atomic-server -- --data-dir ./data serve --port 8080 --web-dir ./dist-web
+```
+
 On first run, enter `ATOMIC_SETUP_TOKEN` in the setup wizard, or create an API token directly:
 
 ```bash

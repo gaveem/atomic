@@ -79,6 +79,10 @@ pub enum Command {
             default_value_t = false
         )]
         dangerously_skip_setup_token: bool,
+
+        /// Directory containing the built web frontend (for example ./dist-web)
+        #[arg(long, env = "ATOMIC_WEB_DIR")]
+        web_dir: Option<PathBuf>,
     },
 
     /// Manage API tokens
